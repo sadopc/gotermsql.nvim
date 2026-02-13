@@ -11,7 +11,7 @@ local defaults = {
 }
 
 local config = {}
-local state = { buf = nil, win = nil }
+local state = { buf = nil, win = nil, job_id = nil }
 
 function M.setup(opts)
   config = vim.tbl_deep_extend("force", defaults, opts or {})
@@ -30,17 +30,17 @@ local function build_cmd(extra_args)
       table.insert(parts, a)
     end
   end
-  return table.concat(parts, " ")
+  return parts
 end
 
 local function calc_win_size()
   local ew = vim.o.columns
   local eh = vim.o.lines - vim.o.cmdheight - 1
   local w = type(config.width) == "number" and config.width <= 1
-      and math.floor(ew * config.width)
+      and math.ceil(ew * config.width)
       or config.width
   local h = type(config.height) == "number" and config.height <= 1
-      and math.floor(eh * config.height)
+      and math.ceil(eh * config.height)
       or config.height
   local col = math.floor((ew - w) / 2)
   local row = math.floor((eh - h) / 2)
@@ -81,33 +81,59 @@ function M.open(extra_args)
   state.buf = buf
   state.win = win
 
-  -- Prevent scrollback from accumulating TUI render frames
-  vim.bo[buf].scrollback = 0
-
-  -- Disable window decorations that interfere with TUI rendering
   vim.wo[win].scrolloff = 0
   vim.wo[win].sidescrolloff = 0
-  vim.wo[win].winhighlight = "Normal:Normal"
+  vim.wo[win].signcolumn = "no"
+  vim.wo[win].cursorcolumn = false
+  vim.wo[win].winhighlight = "Normal:Normal,FloatBorder:Normal"
 
   local cmd = build_cmd(extra_args)
-  vim.fn.termopen(cmd, {
-    on_exit = function()
-      if state.win and vim.api.nvim_win_is_valid(state.win) then
-        vim.api.nvim_win_close(state.win, true)
-      end
-      if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
-        vim.api.nvim_buf_delete(state.buf, { force = true })
-      end
-      state.buf = nil
-      state.win = nil
-    end,
-  })
+
+  vim.schedule(function()
+    state.job_id = vim.fn.jobstart(cmd, {
+      env = { GOTERMSQL_HEIGHT_OFFSET = "-1" },
+      term = true,
+      on_exit = function()
+        vim.schedule(function()
+          if state.win and vim.api.nvim_win_is_valid(state.win) then
+            vim.api.nvim_win_close(state.win, true)
+          end
+          if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+            vim.api.nvim_buf_delete(state.buf, { force = true })
+          end
+          state.buf = nil
+          state.win = nil
+          state.job_id = nil
+        end)
+      end,
+    })
+  end)
 
   vim.cmd("startinsert")
 
   vim.keymap.set("n", "q", function()
     M.close()
   end, { buffer = buf, silent = true })
+
+  -- Handle Neovim window resize
+  vim.api.nvim_create_autocmd("VimResized", {
+    buffer = buf,
+    callback = function()
+      vim.defer_fn(function()
+        if not is_valid() then
+          return
+        end
+        local new_w, new_h, new_row, new_col = calc_win_size()
+        vim.api.nvim_win_set_config(state.win, {
+          relative = "editor",
+          width = new_w,
+          height = new_h,
+          row = new_row,
+          col = new_col,
+        })
+      end, 20)
+    end,
+  })
 end
 
 function M.close()
@@ -119,6 +145,7 @@ function M.close()
   end
   state.buf = nil
   state.win = nil
+  state.job_id = nil
 end
 
 function M.toggle(extra_args)
