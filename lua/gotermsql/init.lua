@@ -81,6 +81,14 @@ function M.open(extra_args)
   state.buf = buf
   state.win = win
 
+  -- Prevent scrollback from accumulating TUI render frames
+  vim.bo[buf].scrollback = 0
+
+  -- Disable window decorations that interfere with TUI rendering
+  vim.wo[win].scrolloff = 0
+  vim.wo[win].sidescrolloff = 0
+  vim.wo[win].winhighlight = "Normal:Normal"
+
   local cmd = build_cmd(extra_args)
   vim.fn.termopen(cmd, {
     on_exit = function()
